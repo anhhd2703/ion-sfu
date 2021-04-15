@@ -91,6 +91,7 @@ func (p *Peer) Join(sid, uid string, config ...JoinConfig) error {
 
 	if !conf.NoSubscribe {
 		p.subscriber, err = NewSubscriber(uid, cfg)
+		p.Sub, err = NewSubscriber(uid, cfg)
 		if err != nil {
 			return fmt.Errorf("error creating transport: %v", err)
 		}
