@@ -48,9 +48,9 @@ type Peer struct {
 	session  *Session
 	provider SessionProvider
 
-	publisher  *Publisher
-	subscriber *Subscriber
-
+	publisher                  *Publisher
+	subscriber                 *Subscriber
+	Sub                        *Subscriber
 	OnOffer                    func(*webrtc.SessionDescription)
 	OnIceCandidate             func(*webrtc.ICECandidateInit, int)
 	OnICEConnectionStateChange func(webrtc.ICEConnectionState)
