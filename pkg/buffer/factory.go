@@ -19,23 +19,25 @@ type Factory struct {
 
 func NewBufferFactory(trackingPackets int, logger logr.Logger) *Factory {
 	// Enable package wide logging for non-method functions.
-	// If logger is nil - buffer logs will be disabled.
+	// If logger is empty - use default Logger.
 	// Logger is a public variable in buffer package.
-	if logger != nil {
-		Logger = logger
-	} else {
+	if logger == (logr.Logger{}) {
 		logger = Logger
+	} else {
+		Logger = logger
 	}
 
 	return &Factory{
 		videoPool: &sync.Pool{
 			New: func() interface{} {
-				return make([]byte, trackingPackets*maxPktSize)
+				b := make([]byte, trackingPackets*maxPktSize)
+				return &b
 			},
 		},
 		audioPool: &sync.Pool{
 			New: func() interface{} {
-				return make([]byte, maxPktSize*25)
+				b := make([]byte, maxPktSize*25)
+				return &b
 			},
 		},
 		rtpBuffers:  make(map[uint32]*Buffer),

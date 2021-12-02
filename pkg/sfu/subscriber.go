@@ -25,8 +25,9 @@ type Subscriber struct {
 	candidates []webrtc.ICECandidateInit
 
 	negotiate func()
-
 	closeOnce sync.Once
+
+	noAutoSubscribe bool
 }
 
 // NewSubscriber creates a new Subscriber
@@ -36,8 +37,8 @@ func NewSubscriber(id string, cfg WebRTCTransportConfig) (*Subscriber, error) {
 		Logger.Error(err, "NewPeer error")
 		return nil, errPeerConnectionInitFailed
 	}
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(me), webrtc.WithSettingEngine(cfg.setting))
-	pc, err := api.NewPeerConnection(cfg.configuration)
+	api := webrtc.NewAPI(webrtc.WithMediaEngine(me), webrtc.WithSettingEngine(cfg.Setting))
+	pc, err := api.NewPeerConnection(cfg.Configuration)
 
 	if err != nil {
 		Logger.Error(err, "NewPeer error")
@@ -45,11 +46,12 @@ func NewSubscriber(id string, cfg WebRTCTransportConfig) (*Subscriber, error) {
 	}
 
 	s := &Subscriber{
-		id:       id,
-		me:       me,
-		pc:       pc,
-		tracks:   make(map[string][]*DownTrack),
-		channels: make(map[string]*webrtc.DataChannel),
+		id:              id,
+		me:              me,
+		pc:              pc,
+		tracks:          make(map[string][]*DownTrack),
+		channels:        make(map[string]*webrtc.DataChannel),
+		noAutoSubscribe: false,
 	}
 
 	pc.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
@@ -72,7 +74,7 @@ func NewSubscriber(id string, cfg WebRTCTransportConfig) (*Subscriber, error) {
 	return s, nil
 }
 
-func (s *Subscriber) AddDatachannel(peer *Peer, dc *Datachannel) error {
+func (s *Subscriber) AddDatachannel(peer Peer, dc *Datachannel) error {
 	ndc, err := s.pc.CreateDataChannel(dc.Label, &webrtc.DataChannelInit{})
 	if err != nil {
 		return err
@@ -81,7 +83,7 @@ func (s *Subscriber) AddDatachannel(peer *Peer, dc *Datachannel) error {
 	mws := newDCChain(dc.middlewares)
 	p := mws.Process(ProcessFunc(func(ctx context.Context, args ProcessArgs) {
 		if dc.onMessage != nil {
-			dc.onMessage(ctx, args, peer.session.getDataChannels(peer.id, dc.Label))
+			dc.onMessage(ctx, args)
 		}
 	}))
 	ndc.OnMessage(func(msg webrtc.DataChannelMessage) {
@@ -99,6 +101,8 @@ func (s *Subscriber) AddDatachannel(peer *Peer, dc *Datachannel) error {
 
 // DataChannel returns the channel for a label
 func (s *Subscriber) DataChannel(label string) *webrtc.DataChannel {
+	s.RLock()
+	defer s.RUnlock()
 	return s.channels[label]
 }
 
@@ -156,6 +160,7 @@ func (s *Subscriber) RemoveDownTrack(streamID string, downTrack *DownTrack) {
 		for i, dt := range dts {
 			if dt == downTrack {
 				idx = i
+				break
 			}
 		}
 		if idx >= 0 {
@@ -203,10 +208,35 @@ func (s *Subscriber) SetRemoteDescription(desc webrtc.SessionDescription) error 
 	return nil
 }
 
+func (s *Subscriber) RegisterDatachannel(label string, dc *webrtc.DataChannel) {
+	s.Lock()
+	s.channels[label] = dc
+	s.Unlock()
+}
+
+func (s *Subscriber) GetDatachannel(label string) *webrtc.DataChannel {
+	return s.DataChannel(label)
+}
+
+func (s *Subscriber) DownTracks() []*DownTrack {
+	s.RLock()
+	defer s.RUnlock()
+	var downTracks []*DownTrack
+	for _, tracks := range s.tracks {
+		downTracks = append(downTracks, tracks...)
+	}
+	return downTracks
+}
+
 func (s *Subscriber) GetDownTracks(streamID string) []*DownTrack {
 	s.RLock()
 	defer s.RUnlock()
 	return s.tracks[streamID]
+}
+
+// Negotiate fires a debounced negotiation request
+func (s *Subscriber) Negotiate() {
+	s.negotiate()
 }
 
 // Close peer
@@ -230,7 +260,9 @@ func (s *Subscriber) downTracksReports() {
 				if !dt.bound.get() {
 					continue
 				}
-				r = append(r, dt.CreateSenderReport())
+				if sr := dt.CreateSenderReport(); sr != nil {
+					r = append(r, sr)
+				}
 				sd = append(sd, dt.CreateSourceDescriptionChunks()...)
 			}
 		}

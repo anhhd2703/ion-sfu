@@ -83,7 +83,7 @@ type action struct {
 type peer struct {
 	id        string
 	mu        sync.Mutex
-	local     *Peer
+	local     *PeerLocal
 	remotePub *webrtc.PeerConnection
 	remoteSub *webrtc.PeerConnection
 	subs      sync.WaitGroup
@@ -131,97 +131,22 @@ func addMedia(done <-chan struct{}, t *testing.T, pc *webrtc.PeerConnection, med
 	return senders
 }
 
+func newTestConfig() Config {
+	return Config{
+		Router: RouterConfig{MaxPacketTrack: 200},
+	}
+}
+
 func TestSFU_SessionScenarios(t *testing.T) {
 	logger.SetGlobalOptions(logger.GlobalConfig{V: 2}) // 2 - TRACE
 	Logger = logger.New()
-	sfu := NewSFU(
-		Config{
-			Router: RouterConfig{MaxPacketTrack: 200},
-		},
-	)
+	config := newTestConfig()
+	sfu := NewSFU(config)
 	sfu.NewDatachannel(APIChannelLabel)
 	tests := []struct {
 		name  string
 		steps []step
 	}{
-		{
-			name: "Sequential join",
-			steps: []step{
-				{
-					actions: []*action{{
-						id:   "remote1",
-						kind: "join",
-					}},
-				},
-				{
-					actions: []*action{{
-						id:   "remote1",
-						kind: "publish",
-						media: []media{
-							{kind: "audio", id: "stream1", tid: "audio"},
-							{kind: "video", id: "stream1", tid: "video"},
-						},
-					}},
-				},
-				{
-					actions: []*action{{
-						id:   "remote2",
-						kind: "join",
-					}},
-				},
-				{
-					actions: []*action{{
-						id:   "remote2",
-						kind: "publish",
-						media: []media{
-							{kind: "audio", id: "stream2", tid: "audio"},
-							{kind: "video", id: "stream2", tid: "video"},
-						},
-					}},
-				},
-			},
-		},
-		{
-			name: "Concurrent join + publish",
-			steps: []step{
-				{
-					actions: []*action{{
-						id:   "remote1",
-						kind: "join",
-					}, {
-						id:   "remote2",
-						kind: "join",
-					}, {
-						id:   "remote3",
-						kind: "join",
-					}},
-				},
-				{
-					actions: []*action{{
-						id:   "remote1",
-						kind: "publish",
-						media: []media{
-							{kind: "audio", id: "stream1", tid: "audio"},
-							{kind: "video", id: "stream1", tid: "video"},
-						},
-					}, {
-						id:   "remote2",
-						kind: "publish",
-						media: []media{
-							{kind: "audio", id: "stream2", tid: "audio"},
-							{kind: "video", id: "stream2", tid: "video"},
-						},
-					}, {
-						id:   "remote3",
-						kind: "publish",
-						media: []media{
-							{kind: "audio", id: "stream3", tid: "audio"},
-							{kind: "video", id: "stream3", tid: "video"},
-						},
-					}},
-				},
-			},
-		},
 		{
 			name: "Multiple stream publish",
 			steps: []step{
@@ -290,10 +215,12 @@ func TestSFU_SessionScenarios(t *testing.T) {
 					func() {
 						switch action.kind {
 						case "join":
-							me := webrtc.MediaEngine{}
+							me, _ := getPublisherMediaEngine()
+							se := webrtc.SettingEngine{}
+							se.DisableMediaEngineCopy(true)
 							err := me.RegisterDefaultCodecs()
 							assert.NoError(t, err)
-							api := webrtc.NewAPI(webrtc.WithMediaEngine(&me))
+							api := webrtc.NewAPI(webrtc.WithMediaEngine(me), webrtc.WithSettingEngine(se))
 							pub, err := api.NewPeerConnection(webrtc.Configuration{})
 							assert.NoError(t, err)
 							sub, err := api.NewPeerConnection(webrtc.Configuration{})

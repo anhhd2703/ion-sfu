@@ -4,23 +4,24 @@ import (
 	"encoding/binary"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/pion/ion-sfu/pkg/buffer"
 	"github.com/pion/webrtc/v3"
 )
 
-const (
-	ntpEpoch = 2208988800
+var (
+	ntpEpoch = time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)
 )
 
 type atomicBool int32
+type ntpTime uint64
 
-func (a *atomicBool) set(value bool) {
-	var i int32
+func (a *atomicBool) set(value bool) (swapped bool) {
 	if value {
-		i = 1
+		return atomic.SwapInt32((*int32)(a), 1) == 0
 	}
-	atomic.StoreInt32((*int32)(a), i)
+	return atomic.SwapInt32((*int32)(a), 0) == 1
 }
 
 func (a *atomicBool) get() bool {
@@ -30,38 +31,38 @@ func (a *atomicBool) get() bool {
 // setVp8TemporalLayer is a helper to detect and modify accordingly the vp8 payload to reflect
 // temporal changes in the SFU.
 // VP8 temporal layers implemented according https://tools.ietf.org/html/rfc7741
-func setVP8TemporalLayer(p *buffer.ExtPacket, s *DownTrack) (payload []byte, picID uint16, tlz0Idx uint8, drop bool) {
+func setVP8TemporalLayer(p *buffer.ExtPacket, d *DownTrack) (buf []byte, picID uint16, tlz0Idx uint8, drop bool) {
 	pkt, ok := p.Payload.(buffer.VP8)
 	if !ok {
-		return p.Packet.Payload, 0, 0, false
+		return
 	}
 
-	layer := atomic.LoadInt32(&s.temporalLayer)
+	layer := atomic.LoadInt32(&d.temporalLayer)
 	currentLayer := uint16(layer)
 	currentTargetLayer := uint16(layer >> 16)
 	// Check if temporal getLayer is requested
 	if currentTargetLayer != currentLayer {
 		if pkt.TID <= uint8(currentTargetLayer) {
-			atomic.StoreInt32(&s.temporalLayer, int32(currentTargetLayer)<<16|int32(currentTargetLayer))
+			atomic.StoreInt32(&d.temporalLayer, int32(currentTargetLayer)<<16|int32(currentTargetLayer))
 		}
 	} else if pkt.TID > uint8(currentLayer) {
 		drop = true
 		return
 	}
-	// If we are here modify payload
-	payload = s.payload
-	payload = payload[:len(p.Packet.Payload)]
-	copy(payload, p.Packet.Payload)
 
-	picID = pkt.PictureID - s.simulcast.refPicID + s.simulcast.pRefPicID + 1
-	tlz0Idx = pkt.TL0PICIDX - s.simulcast.refTlZIdx + s.simulcast.pRefTlZIdx + 1
+	buf = *d.payload
+	buf = buf[:len(p.Packet.Payload)]
+	copy(buf, p.Packet.Payload)
+
+	picID = pkt.PictureID - d.simulcast.refPicID + d.simulcast.pRefPicID + 1
+	tlz0Idx = pkt.TL0PICIDX - d.simulcast.refTlZIdx + d.simulcast.pRefTlZIdx + 1
 
 	if p.Head {
-		s.simulcast.lPicID = picID
-		s.simulcast.lTlZIdx = tlz0Idx
+		d.simulcast.lPicID = picID
+		d.simulcast.lTlZIdx = tlz0Idx
 	}
 
-	modifyVP8TemporalPayload(payload, pkt.PicIDIdx, pkt.TlzIdx, picID, tlz0Idx, pkt.MBit)
+	modifyVP8TemporalPayload(buf, pkt.PicIDIdx, pkt.TlzIdx, picID, tlz0Idx, pkt.MBit)
 
 	return
 }
@@ -75,13 +76,6 @@ func modifyVP8TemporalPayload(payload []byte, picIDIdx, tlz0Idx int, picID uint1
 		payload[picIDIdx+1] = pid[1]
 	}
 	payload[tlz0Idx] = tlz0ID
-
-}
-
-func timeToNtp(ns int64) uint64 {
-	seconds := uint64(ns/1e9 + ntpEpoch)
-	fraction := uint64(((ns % 1e9) << 32) / 1e9)
-	return seconds<<32 | fraction
 }
 
 // Do a fuzzy find for a codec in the list of codecs
@@ -120,4 +114,29 @@ func fastForwardTimestampAmount(newestTimestamp uint32, referenceTimestamp uint3
 		return 0
 	}
 	return newestTimestamp - referenceTimestamp
+}
+
+func (t ntpTime) Duration() time.Duration {
+	sec := (t >> 32) * 1e9
+	frac := (t & 0xffffffff) * 1e9
+	nsec := frac >> 32
+	if uint32(frac) >= 0x80000000 {
+		nsec++
+	}
+	return time.Duration(sec + nsec)
+}
+
+func (t ntpTime) Time() time.Time {
+	return ntpEpoch.Add(t.Duration())
+}
+
+func toNtpTime(t time.Time) ntpTime {
+	nsec := uint64(t.Sub(ntpEpoch))
+	sec := nsec / 1e9
+	nsec = (nsec - sec*1e9) << 32
+	frac := nsec / 1e9
+	if nsec%1e9 >= 1e9/2 {
+		frac++
+	}
+	return ntpTime(sec<<32 | frac)
 }

@@ -1,6 +1,8 @@
 const localVideo = document.getElementById("local-video");
 const remotesDiv = document.getElementById("remotes");
 
+const params = new URLSearchParams(window.location.search)
+
 const serverUrl = "ws://localhost:7000/ws";
 
 /* eslint-env browser */
@@ -17,7 +19,7 @@ const config = {
 const signalLocal = new Signal.IonSFUJSONRPCSignal(serverUrl);
 
 const clientLocal = new IonSDK.Client(signalLocal, config);
-signalLocal.onopen = () => clientLocal.join("test session");
+signalLocal.onopen = () => clientLocal.join(params.has("session") ? params.get("session") : "ion");
 
 /**
  * For every remote stream this object will hold the follwing information:
@@ -60,6 +62,7 @@ const start = () => {
   IonSDK.LocalStream.getUserMedia({
     resolution: "vga",
     audio: true,
+    codec: params.has("codec") ? params.get("codec") : "vp8",
   })
     .then((media) => {
       localStream = media;
@@ -79,7 +82,7 @@ clientLocal.ontrack = (track, stream) => {
     // If the stream is not there in the streams map.
     if (!streams[stream.id]) {
       // Create a video element for rendering the stream
-      remoteVideo = document.createElement("video");
+      const remoteVideo = document.createElement("video");
       remoteVideo.srcObject = stream;
       remoteVideo.autoplay = true;
       remoteVideo.muted = remoteVideoIsMuted;
